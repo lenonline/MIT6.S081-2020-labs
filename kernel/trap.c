@@ -16,6 +16,8 @@ void kernelvec();
 
 extern int devintr();
 
+pte_t *walk(pagetable_t, uint64, int);
+
 void
 trapinit(void)
 {
@@ -49,8 +51,10 @@ usertrap(void)
   
   // save user program counter.
   p->trapframe->epc = r_sepc();
+
+  uint64 scause = r_scause();
   
-  if(r_scause() == 8){
+  if(scause == 8){
     // system call
 
     if(p->killed)
@@ -65,6 +69,39 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(scause == 13 || scause == 15) {
+    uint64 va = r_stval();
+    struct proc *p = myproc();
+    pagetable_t pagetable = myproc()->pagetable;
+    char *mem;
+
+    if(va >= p->sz || va < p->trapframe->sp){
+      p->killed = 1;
+      goto error;
+    }
+
+    va = PGROUNDDOWN(va);
+    pte_t *pte = walk(pagetable, va, 0);
+
+    if(pte != 0 && (*pte & PTE_V)) {
+      p->killed = 1;
+      goto error;
+    }
+
+    mem = kalloc();
+
+    if(mem == 0){
+      p->killed = 1;
+      goto error;
+    }
+
+    memset(mem, 0, PGSIZE);
+
+    if(mappages(pagetable, va, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+      kfree(mem);
+      p->killed = 1;
+      goto error;
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -73,6 +110,7 @@ usertrap(void)
     p->killed = 1;
   }
 
+error:
   if(p->killed)
     exit(-1);
 
